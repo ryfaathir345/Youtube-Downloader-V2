@@ -229,16 +229,37 @@ def run_smart_crop(video_path: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def cut_raw_clip(video_path: str, start: float, end: float, raw_output: str) -> bool:
-    """Step 1 — Fast cut raw clip from full video (stream copy, quick)."""
+    """
+    Frame-accurate cut using two-step seeking.
+
+    Teknik: fast-seek ke ~10 detik sebelum target (keyframe aligned, sangat cepat),
+    lalu decode frame-by-frame 10 detik terakhir menuju titik yang tepat.
+
+    Ini jauh lebih akurat dari -c copy (yang hanya cut di keyframe setiap 2-5 detik).
+    """
+    PRECISE_WINDOW = 10.0   # detik window decode frame-by-frame
+    duration = end - start
+
+    # Step 1: fast-seek ke titik aman sebelum start
+    fast_seek_to   = max(0.0, start - PRECISE_WINDOW)
+    # Step 2: dari titik itu, decode presisi sejauh sisa detik ke start
+    precise_offset = start - fast_seek_to  # 0..PRECISE_WINDOW
+
     result = subprocess.run([
         FFMPEG_PATH, '-y',
-        '-ss', str(start),
-        '-to', str(end),
+        '-ss', f'{fast_seek_to:.3f}',   # fast-seek (keyframe aligned)
         '-i', video_path,
-        '-c', 'copy',
+        '-ss', f'{precise_offset:.3f}', # precise-seek dari titik fast-seek
+        '-t',  f'{duration:.3f}',       # durasi tepat
+        '-c:v', 'libx264',
+        '-c:a', 'aac',
+        '-preset', 'ultrafast',         # cepat karena ini hanya file temp
         '-avoid_negative_ts', 'make_zero',
         raw_output,
     ], capture_output=True, encoding='utf-8', errors='replace')
+
+    if result.returncode != 0:
+        print(f"  [cut] FFmpeg stderr: {result.stderr[-300:]}", file=sys.stderr)
     return result.returncode == 0
 
 
