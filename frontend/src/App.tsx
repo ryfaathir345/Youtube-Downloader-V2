@@ -167,7 +167,17 @@ function App() {
             </div>
 
             <div className="video-container">
-              {videoId ? (
+              {previewClip.clip_url ? (
+                /* Native HTML5 video player — memutar hasil potongan FFmpeg yang sesungguhnya */
+                <video
+                  key={previewClip.clip_url}
+                  src={`http://localhost:3000${previewClip.clip_url}`}
+                  controls
+                  autoPlay
+                  style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', background: '#000', outline: 'none' }}
+                />
+              ) : videoId ? (
+                /* Fallback: YouTube embed dengan timestamp jika klip belum dipotong */
                 <iframe 
                   src={`https://www.youtube.com/embed/${videoId}?start=${Math.floor(previewClip.start_time)}&end=${Math.ceil(previewClip.end_time)}&autoplay=1`}
                   title={previewClip.title}
@@ -177,7 +187,7 @@ function App() {
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
                   <AlertCircle size={40} style={{ marginBottom: '1rem' }} />
-                  <p>Tidak dapat memutar iframe karena URL video YouTube tidak valid.</p>
+                  <p>Klip video belum tersedia. Pastikan backend berhasil memotong video.</p>
                 </div>
               )}
             </div>

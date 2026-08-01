@@ -12,6 +12,7 @@ export interface Clip {
   source: string;
   virality_score?: number;
   viral_potential?: string;
+  clip_url?: string | null;
 }
 
 interface ClipCardProps {
