@@ -1,196 +1,140 @@
 import { useState } from 'react';
-import { BrowserRouter as Router, Routes, Route, Link as RouterLink } from 'react-router-dom';
-import { Download, ChevronRight, Video, Sparkles, Link, Cpu, CheckCircle, ChevronDown } from 'lucide-react';
+import { Scissors, Loader2, AlertCircle, Video } from 'lucide-react';
+import { ClipCard } from './components/ClipCard';
+import type { Clip } from './components/ClipCard';
 import './index.css';
 
-import HomePage from './pages/HomePage';
-import DownloadPage from './pages/DownloadPage';
-import ProcessingPage from './pages/ProcessingPage';
-import ResultsPage from './pages/ResultsPage';
+function App() {
+  const [url, setUrl] = useState('');
+  const [numClips, setNumClips] = useState(2);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [clips, setClips] = useState<Clip[]>([]);
+  const [meta, setMeta] = useState<any>(null);
 
-function LandingPage() {
-  const [openFaq, setOpenFaq] = useState<number | null>(0);
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!url) return;
+    
+    setLoading(true);
+    setError(null);
+    setClips([]);
+    setMeta(null);
 
-  const faqs = [
-    { 
-      question: "Apakah aplikasi ini gratis digunakan?", 
-      answer: "Ya! Versi MVP ClipForge AI saat ini gratis sepenuhnya untuk Anda coba dan gunakan." 
-    },
-    { 
-      question: "Dari platform mana saja saya bisa mengunduh video?", 
-      answer: "Anda dapat memproses video dari YouTube, TikTok, X (Twitter), Instagram, dan berbagai platform lainnya yang didukung oleh engine kami." 
-    },
-    { 
-      question: "Berapa lama proses pembuatan klip AI?", 
-      answer: "Tergantung pada durasi video asli Anda. Rata-rata proses membutuhkan waktu 2 hingga 5 menit dari awal hingga klip siap diunduh." 
-    },
-    { 
-      question: "Apakah video asli saya disimpan di server Anda?", 
-      answer: "Tidak secara permanen. Semua video sumber dan klip yang dihasilkan akan dihapus otomatis dari server kami dalam kurun waktu 24 jam demi menjaga privasi Anda." 
+    try {
+      const response = await fetch('http://localhost:3000/api/v1/clipper/process', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, numClips }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || 'Terjadi kesalahan pada server');
+      }
+
+      setClips(data.clips || []);
+      setMeta(data.meta || null);
+    } catch (err: any) {
+      setError(err.message || 'Gagal terhubung ke server backend');
+    } finally {
+      setLoading(false);
     }
-  ];
+  };
 
   return (
-    <div className="animate-fade-in-up flex-col-container">
-      {/* Decorative Background Elements */}
-      <div className="bg-blob blob-1"></div>
-      <div className="bg-blob blob-2"></div>
-
-      {/* Navbar */}
-      <nav className="navbar">
-        <div className="container flex justify-between items-center">
-          <RouterLink to="/" className="logo">
-            <Video size={28} color="var(--accent-primary)" />
-            Clip<span>Forge</span> AI
-          </RouterLink>
-          <div className="flex gap-4">
-            <RouterLink to="/download" className="btn btn-outline">Downloader</RouterLink>
-            <RouterLink to="/clipper" className="btn btn-primary">Try AI Clipper</RouterLink>
-          </div>
+    <div className="container">
+      <header className="flex flex-col items-center justify-center gap-4" style={{ textAlign: 'center', marginBottom: '4rem' }}>
+        <div style={{ background: 'rgba(139, 92, 246, 0.1)', padding: '1rem', borderRadius: '50%', display: 'inline-flex' }}>
+          <Scissors size={48} color="var(--accent-primary)" />
         </div>
-      </nav>
+        <h1 className="text-gradient" style={{ fontSize: '3rem', margin: 0 }}>ClipForge AI</h1>
+        <p style={{ color: 'var(--text-secondary)', fontSize: '1.1rem', maxWidth: '600px' }}>
+          Ubah video YouTube panjang Anda menjadi klip short-form viral secara otomatis menggunakan kekuatan Groq & Gemini.
+        </p>
+      </header>
 
-      {/* Hero Section */}
-      <main className="container text-center hero flex-grow">
-        <div className="hero-content">
-          <div className="badge mb-4">✨ v4 Now Live with AI Magic</div>
-          <h1 className="hero-title">
-            Repurpose Content <br />
-            <span className="gradient-text">Zero-Touch Pipeline</span>
-          </h1>
-          <p className="hero-subtitle">
-            From full videos to ready-to-upload viral clips. No editing required. 
-            Just paste a link, and our AI does the transcribing, cropping, and titling.
-          </p>
-
-          {/* Before & After Interactive Showcase */}
-          <div className="before-after-showcase mt-4 mb-12">
-            <div className="showcase-card before-card">
-              <div className="video-placeholder landscape">
-                <div className="speaker-avatar"></div>
-                <div className="speaker-avatar small"></div>
+      <main>
+        <div className="glass-panel" style={{ padding: '2rem', maxWidth: '700px', margin: '0 auto' }}>
+          <form onSubmit={handleSubmit} className="flex flex-col gap-6">
+            <div>
+              <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600 }}>URL YouTube</label>
+              <div style={{ position: 'relative' }}>
+                <div style={{ position: 'absolute', left: '16px', top: '50%', transform: 'translateY(-50%)' }}>
+                  <Video size={20} color="var(--text-muted)" />
+                </div>
+                <input 
+                  type="url" 
+                  placeholder="https://www.youtube.com/watch?v=..." 
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  required
+                  style={{ paddingLeft: '48px' }}
+                />
               </div>
-              <p className="showcase-label">Before (16:9 Podcast)</p>
+            </div>
+
+            <div>
+              <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600 }}>Target Jumlah Klip</label>
+              <input 
+                type="number" 
+                min="1" 
+                max="10" 
+                value={numClips}
+                onChange={(e) => setNumClips(parseInt(e.target.value) || 1)}
+                required
+              />
+            </div>
+
+            <button type="submit" className="btn btn-primary" disabled={loading || !url}>
+              {loading ? (
+                <>
+                  <Loader2 className="spinner" size={20} /> Memproses Video... (Bisa memakan waktu lama)
+                </>
+              ) : (
+                <>
+                  <Scissors size={20} /> Generate Clips
+                </>
+              )}
+            </button>
+          </form>
+        </div>
+
+        {error && (
+          <div className="glass-panel animate-fade-in" style={{ padding: '1.5rem', marginTop: '2rem', background: 'rgba(239, 68, 68, 0.1)', borderColor: 'rgba(239, 68, 68, 0.3)' }}>
+            <div className="flex items-center gap-4" style={{ color: 'var(--error)' }}>
+              <AlertCircle size={24} />
+              <strong>Error:</strong> {error}
+            </div>
+          </div>
+        )}
+
+        {!loading && clips.length > 0 && (
+          <div style={{ marginTop: '4rem' }}>
+            <div className="flex justify-between items-center" style={{ marginBottom: '2rem' }}>
+              <h2>Hasil Klip ({clips.length})</h2>
+              {meta && (
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <span className="badge badge-source">Groq: {meta.groq_clip_count}</span>
+                  <span className="badge badge-source">Gemini: {meta.gemini_clip_count}</span>
+                </div>
+              )}
             </div>
             
-            <div className="showcase-arrow">
-              <Sparkles size={32} color="var(--accent-primary)" className="bounce-anim" />
-              <span>AI Magic</span>
-              <ChevronRight size={24} color="var(--text-secondary)" />
-            </div>
-
-            <div className="showcase-card after-card">
-              <div className="video-placeholder portrait">
-                <div className="speaker-avatar focus"></div>
-                <div className="subtitle-mock">this is a viral highlight...</div>
-              </div>
-              <p className="showcase-label gradient-text" style={{fontWeight: 700}}>After (9:16 Viral Clip)</p>
-            </div>
-          </div>
-
-          {/* Two main features */}
-          <div className="dashboard-grid mb-12">
-            {/* Feature 1: Downloader */}
-            <RouterLink to="/download" className="card" style={{ textDecoration: 'none', color: 'inherit' }}>
-              <div className="card-icon-wrapper">
-                <Download size={32} />
-              </div>
-              <h2 className="feature-title">Fast Downloader</h2>
-              <p className="feature-desc">
-                Download raw, high-quality videos from social platforms without any AI processing. Quick and simple.
-              </p>
-              <div className="flex items-center gap-2" style={{ color: 'var(--accent-primary)', fontWeight: 600 }}>
-                Use Downloader <ChevronRight size={18} />
-              </div>
-            </RouterLink>
-
-            {/* Feature 2: AI Clipper */}
-            <RouterLink to="/clipper" className="card" style={{ textDecoration: 'none', color: 'inherit' }}>
-              <div className="card-icon-wrapper" style={{ background: 'rgba(236, 72, 153, 0.1)', color: '#EC4899' }}>
-                <Sparkles size={32} />
-              </div>
-              <h2 className="feature-title">AI Auto-Clipper</h2>
-              <p className="feature-desc">
-                Let AI find the best highlights, burn subtitles, apply dynamic face tracking, and generate viral titles.
-              </p>
-              <div className="flex items-center gap-2" style={{ color: '#EC4899', fontWeight: 600 }}>
-                Start AI Clipper <ChevronRight size={18} />
-              </div>
-            </RouterLink>
-          </div>
-
-          {/* How It Works Section */}
-          <div className="how-it-works mt-8 mb-12">
-            <h3 className="section-subtitle">How it works</h3>
-            <div className="steps-grid">
-              <div className="step-item">
-                <div className="step-icon"><Link size={24} /></div>
-                <h4>1. Paste Link</h4>
-                <p>Input any supported video URL.</p>
-              </div>
-              <div className="step-item">
-                <div className="step-icon"><Cpu size={24} /></div>
-                <h4>2. AI Processing</h4>
-                <p>We analyze, crop, and caption.</p>
-              </div>
-              <div className="step-item">
-                <div className="step-icon"><CheckCircle size={24} /></div>
-                <h4>3. Download</h4>
-                <p>Get viral-ready clips instantly.</p>
-              </div>
-            </div>
-          </div>
-
-          {/* FAQ Section */}
-          <div className="faq-section mt-8 mb-12 text-left">
-            <h3 className="section-subtitle text-center mb-6">Frequently Asked Questions</h3>
-            <div className="faq-list">
-              {faqs.map((faq, index) => (
-                <div 
-                  key={index} 
-                  className={`faq-item ${openFaq === index ? 'active' : ''}`}
-                  onClick={() => setOpenFaq(openFaq === index ? null : index)}
-                >
-                  <div className="faq-question">
-                    {faq.question}
-                    <ChevronDown className="faq-icon" size={20} />
-                  </div>
-                  <div className="faq-answer">
-                    <p>{faq.answer}</p>
-                  </div>
-                </div>
+            <div className="clips-grid">
+              {clips.map((clip, index) => (
+                <ClipCard key={index} clip={clip} index={index} />
               ))}
             </div>
           </div>
-
-        </div>
+        )}
       </main>
 
-      {/* Footer with Watermark */}
-      <footer className="footer">
-        <div className="container flex justify-between items-center">
-          <p className="copyright">&copy; {new Date().getFullYear()} ClipForge AI. All rights reserved.</p>
-          <div className="watermark">
-            <span style={{ opacity: 0.5, fontSize: '0.85rem' }}>Created by</span>
-            <span className="watermark-text">Shadown</span>
-          </div>
-        </div>
+      <footer style={{ marginTop: '5rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+        <p>Built with ❤️ by Antigravity IDE</p>
       </footer>
     </div>
-  );
-}
-
-function App() {
-  return (
-    <Router>
-      <Routes>
-        <Route path="/" element={<LandingPage />} />
-        <Route path="/download" element={<DownloadPage />} />
-        <Route path="/clipper" element={<HomePage />} />
-        <Route path="/processing" element={<ProcessingPage />} />
-        <Route path="/results" element={<ResultsPage />} />
-      </Routes>
-    </Router>
   );
 }
 
