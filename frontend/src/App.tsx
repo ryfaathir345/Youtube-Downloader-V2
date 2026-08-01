@@ -29,7 +29,7 @@ function App() {
     setMeta(null);
 
     try {
-      const response = await fetch('http://localhost:3000/api/v1/clipper/process', {
+      const response = await fetch(`http://${window.location.hostname}:3000/api/v1/clipper/process`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url, numClips }),
@@ -171,7 +171,7 @@ function App() {
                 /* Native HTML5 video player — memutar hasil potongan FFmpeg yang sesungguhnya */
                 <video
                   key={previewClip.clip_url}
-                  src={`http://localhost:3000${previewClip.clip_url}`}
+                  src={`http://${window.location.hostname}:3000${previewClip.clip_url}`}
                   controls
                   autoPlay
                   style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', background: '#000', outline: 'none' }}
