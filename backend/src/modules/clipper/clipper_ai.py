@@ -2,6 +2,16 @@ import os
 import sys
 import json
 import asyncio
+import warnings
+
+# Suppress deprecation warnings from google generativeai
+warnings.filterwarnings("ignore")
+
+# Force UTF-8 on Windows stdout to handle emoji in viral_potential
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
+if sys.stderr.encoding != 'utf-8':
+    sys.stderr.reconfigure(encoding='utf-8')
 from typing import List, Dict, Any
 
 # Ensure required libraries are installed:

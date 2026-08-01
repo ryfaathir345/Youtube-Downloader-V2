@@ -15,9 +15,17 @@ export const processClipping = (req: Request, res: Response): void => {
   // Menjalankan script test_youtube.py
   const command = `python "${scriptPath}" "${url}" ${numClips}`;
 
+  const execOptions = {
+    env: {
+      ...process.env,
+      PYTHONIOENCODING: 'utf-8',
+      PYTHONUTF8: '1',
+    }
+  };
+
   console.log(`[Clipper] Executing: ${command}`);
 
-  exec(command, (error, stdout, stderr) => {
+  exec(command, execOptions, (error, stdout, stderr) => {
     if (error) {
       console.error(`[Clipper Error]: ${error.message}`);
       console.error(`[Clipper Stderr]: ${stderr}`);
