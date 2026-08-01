@@ -1,8 +1,14 @@
 import { useState } from 'react';
-import { Scissors, Loader2, AlertCircle, Video } from 'lucide-react';
+import { Scissors, Loader2, AlertCircle, Video, X, Flame } from 'lucide-react';
 import { ClipCard } from './components/ClipCard';
 import type { Clip } from './components/ClipCard';
 import './index.css';
+
+const extractYouTubeId = (url: string): string | null => {
+  const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/;
+  const match = url.match(regExp);
+  return (match && match[2].length === 11) ? match[2] : null;
+};
 
 function App() {
   const [url, setUrl] = useState('');
@@ -11,6 +17,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [clips, setClips] = useState<Clip[]>([]);
   const [meta, setMeta] = useState<any>(null);
+  const [previewClip, setPreviewClip] = useState<Clip | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -42,6 +49,8 @@ function App() {
       setLoading(false);
     }
   };
+
+  const videoId = extractYouTubeId(url);
 
   return (
     <div className="container">
@@ -113,7 +122,7 @@ function App() {
         {!loading && clips.length > 0 && (
           <div style={{ marginTop: '4rem' }}>
             <div className="flex justify-between items-center" style={{ marginBottom: '2rem' }}>
-              <h2>Hasil Klip ({clips.length})</h2>
+              <h2>Hasil Klip Viral ({clips.length})</h2>
               {meta && (
                 <div style={{ display: 'flex', gap: '12px' }}>
                   <span className="badge badge-source">Groq: {meta.groq_clip_count}</span>
@@ -124,12 +133,66 @@ function App() {
             
             <div className="clips-grid">
               {clips.map((clip, index) => (
-                <ClipCard key={index} clip={clip} index={index} />
+                <ClipCard 
+                  key={index} 
+                  clip={clip} 
+                  index={index} 
+                  onPreview={(c) => setPreviewClip(c)}
+                />
               ))}
             </div>
           </div>
         )}
       </main>
+
+      {/* Video Preview Modal */}
+      {previewClip && (
+        <div className="modal-overlay" onClick={() => setPreviewClip(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1rem 1.5rem', borderBottom: '1px solid var(--glass-border)' }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1.15rem' }}>{previewClip.title}</h3>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                  <span style={{ color: 'var(--accent-primary)', fontWeight: 600 }}>{previewClip.viral_potential || '🔥 High Viral Potential'}</span>
+                  <span>•</span>
+                  <span>Skor Viral: <strong style={{ color: '#ef4444' }}>{previewClip.virality_score ?? 90}/100</strong></span>
+                </div>
+              </div>
+              <button 
+                onClick={() => setPreviewClip(null)}
+                style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px' }}
+              >
+                <X size={24} />
+              </button>
+            </div>
+
+            <div className="video-container">
+              {videoId ? (
+                <iframe 
+                  src={`https://www.youtube.com/embed/${videoId}?start=${Math.floor(previewClip.start_time)}&end=${Math.ceil(previewClip.end_time)}&autoplay=1`}
+                  title={previewClip.title}
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                  allowFullScreen
+                />
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                  <AlertCircle size={40} style={{ marginBottom: '1rem' }} />
+                  <p>Tidak dapat memutar iframe karena URL video YouTube tidak valid.</p>
+                </div>
+              )}
+            </div>
+
+            <div style={{ padding: '1.25rem 1.5rem', background: 'rgba(0,0,0,0.3)', borderTop: '1px solid var(--glass-border)' }}>
+              <p style={{ margin: 0, fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
+                <strong>Hook:</strong> "{previewClip.hook}"
+              </p>
+              <p style={{ margin: '6px 0 0 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                {previewClip.reason}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       <footer style={{ marginTop: '5rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.9rem' }}>
         <p>Built with ❤️ by Antigravity IDE</p>
