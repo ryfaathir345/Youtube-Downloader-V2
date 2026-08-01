@@ -82,9 +82,12 @@ def download_video_from_youtube(url: str, session_id: str) -> str:
 # TRANSCRIPTION
 # ─────────────────────────────────────────────────────────────────────────────
 
-def transcribe_audio(audio_path: str) -> str:
-    """Full-text transcription for AI clip selection."""
-    print("[*] Transkripsi audio menggunakan Groq Whisper...")
+def transcribe_audio(audio_path: str) -> dict:
+    """
+    Transcribe full audio using Groq Whisper with segment-level timestamps.
+    Returns dict with 'text' (str) and 'segments' (list of {start, end, text}).
+    """
+    print("[*] Transkripsi audio menggunakan Groq Whisper (verbose_json + timestamps)...")
     if not GROQ_API_KEY:
         print("Error: GROQ_API_KEY belum di-set!")
         sys.exit(1)
@@ -94,10 +97,21 @@ def transcribe_audio(audio_path: str) -> str:
             file=(audio_path, f.read()),
             model="whisper-large-v3",
             prompt="Video berbahasa Indonesia.",
-            response_format="json",
+            response_format="verbose_json",
+            timestamp_granularities=["segment"],
             language="id",
         )
-    return result.text
+
+    # Normalise segments (Groq may return objects or dicts)
+    raw_segments = getattr(result, 'segments', None) or []
+    segments = []
+    for seg in raw_segments:
+        if isinstance(seg, dict):
+            segments.append({'start': seg.get('start', 0), 'end': seg.get('end', 0), 'text': seg.get('text', '')})
+        else:
+            segments.append({'start': getattr(seg, 'start', 0), 'end': getattr(seg, 'end', 0), 'text': getattr(seg, 'text', '')})
+
+    return {'text': result.text, 'segments': segments}
 
 
 def transcribe_clip_to_srt(clip_path: str, srt_path: str) -> bool:
@@ -239,13 +253,13 @@ def produce_final_clip(raw_clip: str, srt_path: str, crop_filter: str, output_pa
     subtitle_style = (
         "FontName=Arial,"
         "Bold=1,"
-        "FontSize=18,"
-        "PrimaryColour=&H00FFFFFF,"   # white fill
-        "OutlineColour=&H00000000,"   # black outline
-        "Outline=3,"
-        "Shadow=1,"
-        "Alignment=2,"               # bottom centre
-        "MarginV=60"
+        "FontSize=20,"
+        "PrimaryColour=&H00FFFFFF,"    # white fill
+        "OutlineColour=&H00000000,"    # black outline
+        "Outline=4,"
+        "Shadow=0,"
+        "Alignment=8,"                 # TOP-centre — tidak menutupi wajah
+        "MarginV=80"                   # 80px dari atas
     )
 
     has_srt = os.path.exists(srt_path) and os.path.getsize(srt_path) > 10
@@ -292,10 +306,12 @@ async def main():
         print(json.dumps({"error": f"Gagal mengunduh audio: {str(e)}"}))
         sys.exit(1)
 
-    # ── 2. Transcribe full audio ─────────────────────────────────────────────
+    # ── 2. Transcribe full audio with timestamps ─────────────────────────────
     try:
-        transcript_text = transcribe_audio(audio_file)
-        print(f"[*] Transkrip selesai ({len(transcript_text)} karakter).")
+        transcript_result = transcribe_audio(audio_file)
+        transcript_text = transcript_result['text']
+        transcript_segments = transcript_result['segments']
+        print(f"[*] Transkrip selesai: {len(transcript_text)} karakter, {len(transcript_segments)} segmen dengan timestamp.")
     except Exception as e:
         print(json.dumps({"error": f"Gagal transkripsi: {str(e)}"}))
         sys.exit(1)
@@ -303,9 +319,9 @@ async def main():
         if audio_file and os.path.exists(audio_file):
             os.remove(audio_file)
 
-    # ── 3. AI: pilih klip terbaik ────────────────────────────────────────────
+    # ── 3. AI: pilih klip terbaik dengan timestamp nyata dari Whisper ─────────
     print("[*] Mencari klip menggunakan Groq & Gemini (Ensemble)...")
-    prompt = generate_user_prompt(transcript_text, num_clips)
+    prompt = generate_user_prompt(transcript_text, num_clips, segments=transcript_segments)
     groq_task   = asyncio.create_task(call_groq(prompt))
     gemini_task = asyncio.create_task(call_gemini(prompt))
     groq_clips, gemini_clips = await asyncio.gather(groq_task, gemini_task)

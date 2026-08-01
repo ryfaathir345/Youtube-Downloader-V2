@@ -32,26 +32,59 @@ Pahami konteks transcript dan pilih momen yang benar-benar penting atau viral.
 Untuk edukasi, ambil konsep inti atau penjelasan yang actionable.
 Untuk podcast, ambil opini kuat, debat, cerita personal, klaim mengejutkan, atau insight tajam.
 Untuk hiburan, ambil punchline, momen lucu, reaksi, twist, atau energi viral.
-Berikan juga penilaian potensi viral (virality_score: 1-100) dan label potensi viral (viral_potential: misal '🔥 High Viral Potential', '⚡ Potensi View Tinggi', '🚀 Momen Edukasi Viral').
-Semua title, hook, reason, dan teks output wajib bahasa Indonesia natural.
-Gunakan hanya transcript yang diberikan. Jangan mengarang fakta, judul, hook, timestamp, speaker, atau momen.
+Berikan juga penilaian potensi viral (virality_score: 1-100) dan label potensi viral.
+
+PENTING — ATURAN TIMESTAMP:
+- Transcript diberikan dalam format: [MM:SS --> MM:SS] teks
+- Nilai start_time dan end_time WAJIB diambil langsung dari angka waktu yang tertulis di transcript
+- DILARANG keras mengarang, mengira-ngira, atau menginterpolasi timestamp
+- Contoh: jika kamu pilih segmen [01:23 --> 01:38], maka start_time=83.0, end_time=98.0
+- Pastikan klip yang dipilih benar-benar berisi konten yang sesuai dengan title dan hook-nya
+
+Semua title, hook, reason wajib bahasa Indonesia natural.
 Klip harus non-overlap dan tersebar di beberapa bagian video.
-Jawab HANYA dalam JSON valid dengan struktur:
-{"clips": [{"title": "Judul", "hook": "Hook kalimat", "content_type": "edukasi/podcast/hiburan", "reason": "Alasan", "virality_score": 95, "viral_potential": "🔥 High Viral Potential", "start_time": 60.5, "end_time": 75.2, "duration_seconds": 15}]}
+Jawab HANYA dalam JSON valid:
+{"clips": [{"title": "Judul", "hook": "Hook kalimat", "content_type": "edukasi/podcast/hiburan", "reason": "Alasan", "virality_score": 95, "viral_potential": "🔥 High Viral Potential", "start_time": 83.0, "end_time": 98.0, "duration_seconds": 15}]}
 """
 
-def generate_user_prompt(transcript: str, target_count: int) -> str:
-    # Memotong transkrip agar tidak melebihi limit ~6000 tokens dari Groq Free Tier
-    transcript = transcript[:10000]
-    return f"""Berikut adalah transcript video:
-{transcript}
 
-Pilih tepat {target_count} momen short-form terkuat dari transcript di atas.
+def format_segments_for_prompt(segments: List[Dict]) -> str:
+    """Format Whisper segment timestamps into a human+AI readable transcript."""
+    lines = []
+    char_count = 0
+    for seg in segments:
+        start = seg.get('start', 0)
+        end   = seg.get('end',   0)
+        text  = seg.get('text', '').strip()
+        if not text:
+            continue
+        m_s, s_s = divmod(int(start), 60)
+        m_e, s_e = divmod(int(end),   60)
+        line = f"[{m_s:02d}:{s_s:02d} --> {m_e:02d}:{s_e:02d}] {text}"
+        lines.append(line)
+        char_count += len(line)
+        if char_count > 12000:   # stay within Groq free tier token limit
+            break
+    return '\n'.join(lines)
+
+
+def generate_user_prompt(transcript: str, target_count: int, segments: List[Dict] = None) -> str:
+    if segments:
+        transcript_formatted = format_segments_for_prompt(segments)
+    else:
+        # Fallback: plain text without timestamps
+        transcript_formatted = transcript[:10000]
+
+    return f"""Berikut adalah transcript video dengan TIMESTAMP NYATA dari transkripsi otomatis:
+
+{transcript_formatted}
+
+Pilih tepat {target_count} momen short-form terkuat.
 Aturan:
-- Tiap klip harus antara 15 hingga 60 detik.
-- start_time dan end_time wajib dalam detik (float/int).
-- Semua klip wajib non-overlap dan menyebar.
-- Prioritaskan potongan yang punya setup dan payoff utuh.
+- Tiap klip antara 15 hingga 60 detik.
+- start_time dan end_time HARUS diambil dari nilai detik di timestamp [MM:SS --> MM:SS] di atas.
+- Semua klip non-overlap dan menyebar di berbagai bagian video.
+- Pastikan isi klip (start→end) benar-benar berisi konten yang sesuai title dan hook.
 """
 
 async def call_groq(prompt: str) -> List[Dict]:
