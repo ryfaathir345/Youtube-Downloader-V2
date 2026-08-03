@@ -1,6 +1,8 @@
 import json
 import math
 import os
+import re
+import subprocess
 import sys
 import warnings
 
@@ -19,6 +21,50 @@ def clamp(value, low, high):
 def even(value):
     value = int(round(value))
     return value if value % 2 == 0 else value + 1
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# PILLARBOX / LETTERBOX DETECTION
+# ─────────────────────────────────────────────────────────────────────────
+
+def detect_active_region(video_path):
+    """
+    Run ffmpeg cropdetect on the first 5 seconds of the video and return
+    (crop_w, crop_h, crop_x, crop_y) as integers, or None if:
+      - ffmpeg is not available / errors out
+      - no 'crop=W:H:X:Y' line is found in stderr output
+    We parse the LAST crop= line because cropdetect needs a few frames to
+    stabilise its black-level estimate.
+    """
+    # Locate ffmpeg the same way smart_crop is invoked (same Python env).
+    # We accept either the env variable FFMPEG_PATH or plain 'ffmpeg' on PATH.
+    ffmpeg_exe = os.environ.get("FFMPEG_PATH", "ffmpeg")
+    try:
+        proc = subprocess.run(
+            [
+                ffmpeg_exe, "-hide_banner",
+                "-i", video_path,
+                "-vf", "cropdetect=24:2:0",
+                "-t", "5",
+                "-f", "null", "-",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+    except Exception as exc:
+        print(f"[letterbox] cropdetect failed: {exc}", file=sys.stderr)
+        return None
+
+    # cropdetect prints to stderr; find all crop= proposals and take the last.
+    matches = re.findall(r"crop=(\d+):(\d+):(\d+):(\d+)", proc.stderr)
+    if not matches:
+        return None
+
+    crop_w, crop_h, crop_x, crop_y = (int(v) for v in matches[-1])
+    return crop_w, crop_h, crop_x, crop_y
 
 
 def escaped_if_expr(points, max_x):
@@ -96,7 +142,7 @@ def detect_faces(gray_frame):
     return merged
 
 
-def pick_target_face(faces, prev_crop_x, scale_factor, target_width, max_x):
+def pick_target_face(faces, prev_crop_x, scale_factor, target_width, max_x, crop_x_offset=0):
     """
     Choose which detected face to track this frame.
 
@@ -106,14 +152,21 @@ def pick_target_face(faces, prev_crop_x, scale_factor, target_width, max_x):
     crop currently is -- unless another face is significantly bigger
     (>40% larger area), in which case it's allowed to take over. This adds
     inertia so the crop doesn't jump every time box sizes wobble a little.
+
+    crop_x_offset: horizontal offset (pixels in original frame) of the active
+    region returned by detect_active_region().  cv2 always works on the FULL
+    frame, so we subtract this offset before computing the crop position so
+    that coordinates are relative to the content area, not the black bar.
     """
     if not faces:
         return None
 
     candidates = []
     for (x, y, w, h) in faces:
-        center_x = (x + w / 2) * scale_factor
-        crop_x = int(round(clamp(center_x - (target_width / 2), 0, max_x)))
+        # Subtract the pillarbox offset so the face centre is expressed in
+        # active-content coordinates before scaling.
+        content_center_x = (x + w / 2 - crop_x_offset) * scale_factor
+        crop_x = int(round(clamp(content_center_x - (target_width / 2), 0, max_x)))
         candidates.append((crop_x, w * h))
 
     if prev_crop_x is None:
@@ -152,15 +205,40 @@ def main():
         print(json.dumps({"ok": False, "error": "Invalid video dimensions"}))
         return
 
-    scaled_width = even(source_width * target_height / source_height)
+    # ── Pillarbox / letterbox pre-processing ─────────────────────────────────
+    # Run cropdetect on the first 5 s.  If significant black bars are found
+    # (active width < 90% of frame width) we switch all geometry calculations
+    # to the active-content dimensions and prepend a crop= filter to strip the
+    # bars before the scale/face-crop pipeline runs.
+    pillarbox_prefix = ""       # prepended to both tracked and fallback filters
+    crop_x_offset    = 0        # horizontal bar width in original frame pixels
+    source_width_eff  = source_width
+    source_height_eff = source_height
+
+    region = detect_active_region(video_path)
+    if region is not None:
+        crop_w, crop_h, crop_x, crop_y = region
+        if crop_w < 0.9 * source_width:
+            print(
+                f"[letterbox] Pillarbox terdeteksi & dibuang: {crop_w}x{crop_h} "
+                f"offset_x={crop_x} (dari frame asli {int(source_width)}x{int(source_height)})",
+                file=sys.stderr,
+            )
+            source_width_eff  = crop_w
+            source_height_eff = crop_h
+            crop_x_offset     = crop_x
+            # This filter is prepended before scale so FFmpeg sees only content pixels.
+            pillarbox_prefix  = f"crop={crop_w}:{crop_h}:{crop_x}:0,"
+
+    scaled_width = even(source_width_eff * target_height / source_height_eff)
     max_x = max(0, scaled_width - target_width)
-    scale_factor = target_height / source_height
+    scale_factor = target_height / source_height_eff
 
     if max_x <= 0:
         print(json.dumps({
             "ok": True,
             "tracked": False,
-            "filter": f"scale={target_width}:{target_height}:force_original_aspect_ratio=increase,crop={target_width}:{target_height}",
+            "filter": f"{pillarbox_prefix}scale={target_width}:{target_height}:force_original_aspect_ratio=increase,crop={target_width}:{target_height}",
         }))
         return
 
@@ -186,7 +264,10 @@ def main():
 
         if faces:
             detected_samples += 1
-            crop_x = pick_target_face(faces, prev_crop_x, scale_factor, target_width, max_x)
+            crop_x = pick_target_face(
+                faces, prev_crop_x, scale_factor, target_width, max_x,
+                crop_x_offset=crop_x_offset,
+            )
             timestamp = frame_index / fps
             raw_points.append((timestamp, crop_x))
             prev_crop_x = crop_x
@@ -203,7 +284,7 @@ def main():
             "ok": True,
             "tracked": False,
             "detection_rate": round(detection_rate, 1),
-            "filter": f"scale={target_width}:{target_height}:force_original_aspect_ratio=increase,crop={target_width}:{target_height}",
+            "filter": f"{pillarbox_prefix}scale={target_width}:{target_height}:force_original_aspect_ratio=increase,crop={target_width}:{target_height}",
         }))
         return
 
@@ -237,7 +318,7 @@ def main():
             smoothed.append(last_point)
 
     expression = escaped_if_expr(smoothed, max_x)
-    video_filter = f"scale=-2:{target_height},crop={target_width}:{target_height}:{expression}:0"
+    video_filter = f"{pillarbox_prefix}scale=-2:{target_height},crop={target_width}:{target_height}:{expression}:0"
 
     print(json.dumps({
         "ok": True,

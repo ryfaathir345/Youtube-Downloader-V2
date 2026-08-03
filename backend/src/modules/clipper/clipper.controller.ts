@@ -21,7 +21,7 @@ export const processClipping = (req: Request, res: Response): void => {
   const subtitleConfig = {
     style: subtitleStyle || { font: 'Arial', color: 'white_black', size: 'medium', bold: true },
     position: subtitlePosition,
-    typingAnimation: Boolean(typingAnimation),
+    typingAnimation: typingAnimation === true || typingAnimation === 'true',
   };
 
   const scriptPath = path.resolve(__dirname, 'test_youtube.py');

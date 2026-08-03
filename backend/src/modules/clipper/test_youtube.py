@@ -70,6 +70,12 @@ def download_audio_from_youtube(url: str, session_id: str) -> str:
         'quiet': True,
         'no_warnings': True,
         'progress_hooks': [ydl_hook],
+        # Use android client — works without JS runtime and bypasses most 403s
+        'extractor_args': {'youtube': {'player_client': ['android', 'mweb']}},
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
+        },
+        'nocheckcertificate': True,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
@@ -97,6 +103,12 @@ def download_video_from_youtube(url: str, session_id: str) -> str:
         'quiet': True,
         'no_warnings': True,
         'progress_hooks': [ydl_hook],
+        # Use android client — works without JS runtime and bypasses most 403s
+        'extractor_args': {'youtube': {'player_client': ['android', 'mweb']}},
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
+        },
+        'nocheckcertificate': True,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
@@ -159,7 +171,7 @@ COLOR_PRESETS = {
 }
 
 FONT_PRESETS = ["Arial", "Poppins", "Montserrat", "Roboto", "Courier New"]
-SIZE_PRESETS = {"small": 18, "medium": 24, "large": 30}
+SIZE_PRESETS = {"small": 36, "medium": 48, "large": 64}
 
 
 def format_ass_time(seconds: float) -> str:
@@ -227,6 +239,9 @@ def build_ass_header(style_config: dict, position_config: str) -> str:
     )
 
 
+TYPING_REVEAL_DELAY = 0.06  # detik — kompensasi word-timestamp Whisper yang cenderung early-bias
+
+
 def words_to_ass_events(words: list, typing_animation: bool = False, max_words_per_line: int = 4) -> list:
     """Group word-level timestamps into ASS Dialogue event lines, optionally with typewriter effect."""
     events = []
@@ -260,17 +275,27 @@ def words_to_ass_events(words: list, typing_animation: bool = False, max_words_p
                     w_end = float(w.get('end', 0) if isinstance(w, dict) else w.end)
                     group_words.append((w_text, w_start, w_end))
 
-                for k in range(len(group_words)):
-                    w_text, w_start, w_end = group_words[k]
-                    if k < len(group_words) - 1:
-                        next_start = group_words[k + 1][1]
-                        event_end = max(next_start, w_start + 0.1)
-                    else:
-                        event_end = max(w_end, w_start + 0.3)
+                # Geser sedikit titik "reveal" tiap kata ke depan untuk
+                # mengompensasi word-timestamp Whisper yang sering early-bias.
+                # Di-clamp supaya tidak melebihi waktu selesai kata itu sendiri.
+                reveal_times = []
+                for (_, w_start, w_end) in group_words:
+                    reveal = w_start + TYPING_REVEAL_DELAY
+                    if w_end > w_start:
+                        reveal = min(reveal, w_end)
+                    reveal_times.append(reveal)
 
-                    cum_text = ' '.join(gw[0] for gw in group_words[:k+1]).strip()
+                for k in range(len(group_words)):
+                    _, _, w_end = group_words[k]
+                    event_start = reveal_times[k]
+                    if k < len(group_words) - 1:
+                        event_end = max(reveal_times[k + 1], event_start + 0.1)
+                    else:
+                        event_end = max(w_end + TYPING_REVEAL_DELAY, event_start + 0.3)
+
+                    cum_text = ' '.join(gw[0] for gw in group_words[:k + 1]).strip()
                     if cum_text:
-                        events.append(f"Dialogue: 0,{format_ass_time(w_start)},{format_ass_time(event_end)},Default,,0,0,0,,{cum_text}")
+                        events.append(f"Dialogue: 0,{format_ass_time(event_start)},{format_ass_time(event_end)},Default,,0,0,0,,{cum_text}")
             except Exception:
                 pass
 
@@ -278,16 +303,39 @@ def words_to_ass_events(words: list, typing_animation: bool = False, max_words_p
     return events
 
 
+def _extract_audio_for_groq(clip_path: str, audio_path: str, bitrate: str = "64k") -> bool:
+    """
+    Extract a small mono MP3 from a video clip using FFmpeg.
+    Returns True on success, False on failure.
+    """
+    result = subprocess.run([
+        FFMPEG_PATH, '-y',
+        '-i', clip_path,
+        '-vn',
+        '-ar', '16000',
+        '-ac', '1',
+        '-c:a', 'libmp3lame',
+        '-b:a', bitrate,
+        audio_path,
+    ], capture_output=True, encoding='utf-8', errors='replace')
+    if result.returncode != 0:
+        print(f"  [subtitle] FFmpeg audio extract failed: {result.stderr[-200:]}", file=sys.stderr)
+    return result.returncode == 0
+
+
 def transcribe_clip_to_ass(
     clip_path: str,
     ass_path: str,
     style_config: dict = None,
     position_config: str = "top",
-    typing_animation: bool = False
+    typing_animation: bool = False,
+    audio_extract_path: str = None,
 ) -> tuple:
     """
     Transcribe a short clip with word-level timestamps and write an ASS file.
-    Includes 1x retry for transient Groq errors and handles silent clips gracefully.
+    Extracts audio-only MP3 before uploading to Groq to avoid 413 errors on
+    large video files.  Includes 1x retry for transient Groq errors and
+    handles silent clips gracefully.
     Returns (has_subtitle: bool, subtitle_error: str | None).
     """
     print(f"  [subtitle] Membuat ASS subtitle untuk {os.path.basename(clip_path)}...")
@@ -298,8 +346,34 @@ def transcribe_clip_to_ass(
         style_config = {}
 
     abs_clip_path = os.path.abspath(clip_path)
-    abs_ass_path = os.path.abspath(ass_path)
+    abs_ass_path  = os.path.abspath(ass_path)
 
+    # ── Audio extraction (avoid 413 by never sending raw video to Groq) ──────
+    upload_path = abs_clip_path          # fallback: use video directly
+    upload_name = os.path.basename(abs_clip_path)
+
+    if audio_extract_path is not None:
+        abs_audio_path = os.path.abspath(audio_extract_path)
+        extracted = _extract_audio_for_groq(abs_clip_path, abs_audio_path, bitrate="64k")
+        if not extracted:
+            return False, "Gagal ekstrak audio dari klip untuk transkripsi"
+
+        # Safety-net: if even 64k audio is still > 24 MB, retry at 32k
+        MAX_GROQ_BYTES = 24 * 1024 * 1024   # 24 MB
+        if os.path.getsize(abs_audio_path) > MAX_GROQ_BYTES:
+            print("  [subtitle] Audio file > 24 MB, retrying extraction at 32k bitrate...", file=sys.stderr)
+            extracted = _extract_audio_for_groq(abs_clip_path, abs_audio_path, bitrate="32k")
+            if not extracted:
+                return False, "Gagal ekstrak audio (32k retry) dari klip untuk transkripsi"
+            if os.path.getsize(abs_audio_path) > MAX_GROQ_BYTES:
+                return False, "Audio hasil ekstraksi masih melebihi batas ukuran Groq (>24 MB) bahkan setelah downgrade bitrate"
+
+        upload_path = abs_audio_path
+        upload_name = os.path.basename(abs_audio_path)
+    else:
+        print("  [subtitle] Peringatan: audio_extract_path tidak diberikan, mengirim video langsung ke Groq.", file=sys.stderr)
+
+    # ── Groq Whisper transcription ────────────────────────────────────────────
     client = groq.Groq(api_key=GROQ_API_KEY)
     max_attempts = 2
     last_error = None
@@ -307,9 +381,9 @@ def transcribe_clip_to_ass(
 
     for attempt in range(1, max_attempts + 1):
         try:
-            with open(abs_clip_path, "rb") as f:
+            with open(upload_path, "rb") as f:
                 result = client.audio.transcriptions.create(
-                    file=(os.path.basename(abs_clip_path), f.read()),
+                    file=(upload_name, f.read()),
                     model="whisper-large-v3",
                     response_format="verbose_json",
                     timestamp_granularities=["word"],
@@ -332,7 +406,7 @@ def transcribe_clip_to_ass(
     if last_error is not None:
         return False, f"Groq Whisper error: {str(last_error)}"
 
-    words = getattr(result, 'words', None) or []
+    words    = getattr(result, 'words',    None) or []
     segments = getattr(result, 'segments', None) or []
     full_text = getattr(result, 'text', '').strip()
 
@@ -349,15 +423,15 @@ def transcribe_clip_to_ass(
         events = []
         for seg in segments:
             start_t = float(seg.get('start', 0) if isinstance(seg, dict) else seg.start)
-            end_t = float(seg.get('end', 0) if isinstance(seg, dict) else seg.end)
-            text = (seg.get('text', '') if isinstance(seg, dict) else seg.text).strip()
+            end_t   = float(seg.get('end',   0) if isinstance(seg, dict) else seg.end)
+            text    = (seg.get('text', '') if isinstance(seg, dict) else seg.text).strip()
             if text:
                 events.append(f"Dialogue: 0,{format_ass_time(start_t)},{format_ass_time(end_t)},Default,,0,0,0,,{text}")
     else:
         events = []
 
     if not events:
-        print("  [subtitle] Hasilt transkripsi kosong (skip subtitle).")
+        print("  [subtitle] Hasil transkripsi kosong (skip subtitle).")
         return False, None
 
     try:
@@ -497,6 +571,8 @@ async def main():
     subtitle_style = subtitle_config.get("style", {})
     subtitle_position = subtitle_config.get("position", "top")
     typing_animation = subtitle_config.get("typingAnimation", False)
+    # Debug: confirm frontend value arrives correctly as Python bool (not str)
+    print(f"[debug] typing_animation = {typing_animation!r}  (type: {type(typing_animation).__name__})", file=sys.stderr)
 
     session_id = str(uuid.uuid4())[:8]
 
@@ -582,9 +658,10 @@ async def main():
             emit_progress("Cutting Viral Clips", int(i / len(final_clips) * 100), f"Merender klip {i+1} dari {len(final_clips)}")
 
             # Temp files for this clip
-            raw_clip_path = os.path.abspath(os.path.join(SCRIPT_DIR, f"temp_raw_{session_id}_{i}.mp4"))
-            ass_path      = os.path.abspath(os.path.join(SCRIPT_DIR, f"temp_sub_{session_id}_{i}.ass"))
-            final_path    = os.path.abspath(os.path.join(CLIPS_OUTPUT_DIR, f"clip_{session_id}_{i}.mp4"))
+            raw_clip_path      = os.path.abspath(os.path.join(SCRIPT_DIR, f"temp_raw_{session_id}_{i}.mp4"))
+            ass_path           = os.path.abspath(os.path.join(SCRIPT_DIR, f"temp_sub_{session_id}_{i}.ass"))
+            audio_extract_path = os.path.abspath(os.path.join(SCRIPT_DIR, f"temp_sub_audio_{session_id}_{i}.mp3"))
+            final_path         = os.path.abspath(os.path.join(CLIPS_OUTPUT_DIR, f"clip_{session_id}_{i}.mp4"))
 
             try:
                 # Step A — Cut raw clip (stream copy, fast)
@@ -601,12 +678,15 @@ async def main():
                     crop_filter = run_smart_crop(raw_clip_path)
 
                 # Step C — Subtitle via Groq Whisper (word timestamps) into ASS
+                # audio_extract_path is passed so transcribe_clip_to_ass sends a small
+                # audio-only MP3 instead of the raw video, avoiding 413 errors.
                 sub_ok, sub_err = transcribe_clip_to_ass(
                     raw_clip_path,
                     ass_path,
                     style_config=subtitle_style,
                     position_config=subtitle_position,
-                    typing_animation=typing_animation
+                    typing_animation=typing_animation,
+                    audio_extract_path=audio_extract_path,
                 )
 
                 # Step D — Final render: crop + burn subtitle
@@ -627,8 +707,8 @@ async def main():
                 clip['has_subtitle'] = False
                 clip['subtitle_error'] = str(e)
             finally:
-                # Cleanup temp files for this clip
-                for tmp in [raw_clip_path, ass_path]:
+                # Cleanup temp files for this clip (including extracted audio)
+                for tmp in [raw_clip_path, ass_path, audio_extract_path]:
                     if os.path.exists(tmp):
                         try:
                             os.remove(tmp)
@@ -665,4 +745,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
