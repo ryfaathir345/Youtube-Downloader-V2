@@ -22,9 +22,18 @@ except ImportError:
     print("Harap install dependencies terlebih dahulu: pip install yt-dlp groq google-generativeai")
     sys.exit(1)
 
-from clipper_ai import generate_user_prompt, call_groq, call_gemini, deduplicate_and_merge
+from clipper_ai import generate_user_prompt, call_groq, call_gemini, call_openrouter, snap_to_segments, deduplicate_and_merge
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+
+def emit_progress(stage: str, percent: int, detail: str = ""):
+    progress_data = {
+        "type": "progress",
+        "stage": stage,
+        "percent": percent,
+        "detail": detail
+    }
+    print(f"\n=== PROGRESS === {json.dumps(progress_data)}", flush=True)
 
 # Paths
 FFMPEG_PATH      = r'C:\Users\Administrator\AppData\Local\Microsoft\WinGet\Links\ffmpeg.exe'
@@ -44,6 +53,15 @@ TARGET_H = 1280
 def download_audio_from_youtube(url: str, session_id: str) -> str:
     print(f"[*] Mengunduh audio dari {url}...")
     audio_path = f"temp_audio_{session_id}.mp3"
+    def ydl_hook(d):
+        if d['status'] == 'downloading':
+            percent_str = d.get('_percent_str', '0%').strip('\x1b[0;94m% ')
+            try:
+                percent = int(float(percent_str))
+                emit_progress("Downloading Media", percent, f"Mengunduh audio... {percent_str}%")
+            except:
+                pass
+
     ydl_opts = {
         'format': 'bestaudio/best',
         'outtmpl': f'temp_audio_{session_id}.%(ext)s',
@@ -51,6 +69,7 @@ def download_audio_from_youtube(url: str, session_id: str) -> str:
         'ffmpeg_location': FFMPEG_PATH,
         'quiet': True,
         'no_warnings': True,
+        'progress_hooks': [ydl_hook],
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
@@ -61,6 +80,15 @@ def download_video_from_youtube(url: str, session_id: str) -> str:
     """Download video (video+audio) in 720p max."""
     print("[*] Mengunduh video untuk diproses...")
     video_base = os.path.join(SCRIPT_DIR, f"temp_video_{session_id}")
+    def ydl_hook(d):
+        if d['status'] == 'downloading':
+            percent_str = d.get('_percent_str', '0%').strip('\x1b[0;94m% ')
+            try:
+                percent = int(float(percent_str))
+                emit_progress("Downloading Media", percent, f"Mengunduh video utama... {percent_str}%")
+            except:
+                pass
+
     ydl_opts = {
         'format': 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]',
         'outtmpl': video_base + '.%(ext)s',
@@ -68,6 +96,7 @@ def download_video_from_youtube(url: str, session_id: str) -> str:
         'ffmpeg_location': FFMPEG_PATH,
         'quiet': True,
         'no_warnings': True,
+        'progress_hooks': [ydl_hook],
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
@@ -88,6 +117,7 @@ def transcribe_audio(audio_path: str) -> dict:
     Returns dict with 'text' (str) and 'segments' (list of {start, end, text}).
     """
     print("[*] Transkripsi audio menggunakan Groq Whisper (verbose_json + timestamps)...")
+    emit_progress("Transcribing Audio", 0, "Memulai transkripsi Whisper API...")
     if not GROQ_API_KEY:
         print("Error: GROQ_API_KEY belum di-set!")
         sys.exit(1)
@@ -111,83 +141,232 @@ def transcribe_audio(audio_path: str) -> dict:
         else:
             segments.append({'start': getattr(seg, 'start', 0), 'end': getattr(seg, 'end', 0), 'text': getattr(seg, 'text', '')})
 
+    emit_progress("Transcribing Audio", 100, "Transkripsi selesai")
     return {'text': result.text, 'segments': segments}
 
 
-def transcribe_clip_to_srt(clip_path: str, srt_path: str) -> bool:
-    """
-    Transcribe a short clip with word-level timestamps and write an SRT file.
-    Uses Groq Whisper verbose_json + word timestamps.
-    """
-    print(f"  [subtitle] Membuat subtitle untuk {os.path.basename(clip_path)}...")
-    if not GROQ_API_KEY:
-        return False
-    try:
-        client = groq.Groq(api_key=GROQ_API_KEY)
-        with open(clip_path, "rb") as f:
-            result = client.audio.transcriptions.create(
-                file=(os.path.basename(clip_path), f.read()),
-                model="whisper-large-v3",
-                response_format="verbose_json",
-                timestamp_granularities=["word"],
-                language="id",
-            )
+import time
 
-        words = getattr(result, 'words', None) or []
-        if not words:
-            # Fallback: use segments if words not available
-            segments = getattr(result, 'segments', []) or []
-            lines = []
-            for i, seg in enumerate(segments, 1):
-                start = format_srt_time(seg.get('start', 0))
-                end = format_srt_time(seg.get('end', 0))
-                text = seg.get('text', '').strip()
-                if text:
-                    lines.append(f"{i}\n{start} --> {end}\n{text}\n")
-        else:
-            lines = words_to_srt_lines(words)
+# ─────────────────────────────────────────────────────────────────────────────
+# TRANSCRIPTION & ASS SUBTITLE GENERATION
+# ─────────────────────────────────────────────────────────────────────────────
 
-        with open(srt_path, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(lines))
-        return True
-    except Exception as e:
-        print(f"  [subtitle] Gagal: {e}", file=sys.stderr)
-        return False
+COLOR_PRESETS = {
+    "white_black": {"primary": "&H00FFFFFF", "outline": "&H00000000"},
+    "yellow_black": {"primary": "&H0000FFFF", "outline": "&H00000000"},
+    "cyan_black": {"primary": "&H00FFFF00", "outline": "&H00000000"},
+    "green_black": {"primary": "&H0000FF00", "outline": "&H00000000"},
+}
+
+FONT_PRESETS = ["Arial", "Poppins", "Montserrat", "Roboto", "Courier New"]
+SIZE_PRESETS = {"small": 18, "medium": 24, "large": 30}
 
 
-def words_to_srt_lines(words: list, max_words_per_line: int = 4) -> list:
-    """Group word-level timestamps into subtitle lines."""
-    lines = []
-    i = 0
-    idx = 1
-    while i < len(words):
-        group = words[i:i + max_words_per_line]
-        try:
-            start_t = float(group[0].get('start', 0) if isinstance(group[0], dict) else group[0].start)
-            end_t   = float(group[-1].get('end', 0)   if isinstance(group[-1], dict) else group[-1].end)
-            text    = ' '.join(
-                w.get('word', '') if isinstance(w, dict) else w.word
-                for w in group
-            ).strip()
-        except Exception:
-            i += max_words_per_line
-            continue
-
-        if text:
-            start_str = format_srt_time(start_t)
-            end_str   = format_srt_time(end_t)
-            lines.append(f"{idx}\n{start_str} --> {end_str}\n{text}\n")
-            idx += 1
-        i += max_words_per_line
-    return lines
-
-
-def format_srt_time(seconds: float) -> str:
+def format_ass_time(seconds: float) -> str:
+    """Format seconds into ASS timestamp H:MM:SS.cs (centiseconds)."""
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
     s = int(seconds % 60)
-    ms = int(round((seconds - int(seconds)) * 1000))
-    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+    cs = int(round((seconds - int(seconds)) * 100))
+    if cs >= 100:
+        s += cs // 100
+        cs %= 100
+        if s >= 60:
+            m += s // 60
+            s %= 60
+            if m >= 60:
+                h += m // 60
+                m %= 60
+    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+
+def build_ass_header(style_config: dict, position_config: str) -> str:
+    """Build dynamic ASS header [V4+ Styles] based on user settings."""
+    font = style_config.get("font", "Arial") if isinstance(style_config, dict) else "Arial"
+    if font not in FONT_PRESETS:
+        font = "Arial"
+
+    color_key = style_config.get("color", "white_black") if isinstance(style_config, dict) else "white_black"
+    colors = COLOR_PRESETS.get(color_key, COLOR_PRESETS["white_black"])
+
+    size_val = style_config.get("size", "medium") if isinstance(style_config, dict) else "medium"
+    if isinstance(size_val, int):
+        font_size = size_val
+    else:
+        font_size = SIZE_PRESETS.get(size_val, 24)
+
+    bold_flag = style_config.get("bold", True) if isinstance(style_config, dict) else True
+    bold_val = 1 if bold_flag else 0
+
+    # Subtitle position mapping to ASS Alignment and MarginV:
+    # Atas -> Alignment=8, MarginV=80
+    # Tengah -> Alignment=5, MarginV=0
+    # Bawah -> Alignment=2, MarginV=60
+    pos_lower = str(position_config).lower()
+    if pos_lower == "top" or pos_lower == "atas":
+        alignment = 8
+        margin_v = 80
+    elif pos_lower == "middle" or pos_lower == "tengah":
+        alignment = 5
+        margin_v = 0
+    else:  # bottom / bawah
+        alignment = 2
+        margin_v = 60
+
+    return (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        f"PlayResX: {TARGET_W}\n"
+        f"PlayResY: {TARGET_H}\n"
+        "ScaledBorderAndShadow: yes\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: Default,{font},{font_size},{colors['primary']},&H00000000,{colors['outline']},&H80000000,{bold_val},0,0,0,100,100,0,0,1,3,0,{alignment},20,20,{margin_v},1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+
+
+def words_to_ass_events(words: list, typing_animation: bool = False, max_words_per_line: int = 4) -> list:
+    """Group word-level timestamps into ASS Dialogue event lines, optionally with typewriter effect."""
+    events = []
+    i = 0
+    while i < len(words):
+        group = words[i:i + max_words_per_line]
+        if not group:
+            break
+
+        if not typing_animation:
+            try:
+                start_t = float(group[0].get('start', 0) if isinstance(group[0], dict) else group[0].start)
+                end_t   = float(group[-1].get('end', 0)   if isinstance(group[-1], dict) else group[-1].end)
+                text    = ' '.join(
+                    w.get('word', '') if isinstance(w, dict) else w.word
+                    for w in group
+                ).strip()
+                if text:
+                    if end_t <= start_t:
+                        end_t = start_t + 0.5
+                    events.append(f"Dialogue: 0,{format_ass_time(start_t)},{format_ass_time(end_t)},Default,,0,0,0,,{text}")
+            except Exception:
+                pass
+        else:
+            # Typewriter animation (cumulative words event by event)
+            try:
+                group_words = []
+                for w in group:
+                    w_text = (w.get('word', '') if isinstance(w, dict) else w.word).strip()
+                    w_start = float(w.get('start', 0) if isinstance(w, dict) else w.start)
+                    w_end = float(w.get('end', 0) if isinstance(w, dict) else w.end)
+                    group_words.append((w_text, w_start, w_end))
+
+                for k in range(len(group_words)):
+                    w_text, w_start, w_end = group_words[k]
+                    if k < len(group_words) - 1:
+                        next_start = group_words[k + 1][1]
+                        event_end = max(next_start, w_start + 0.1)
+                    else:
+                        event_end = max(w_end, w_start + 0.3)
+
+                    cum_text = ' '.join(gw[0] for gw in group_words[:k+1]).strip()
+                    if cum_text:
+                        events.append(f"Dialogue: 0,{format_ass_time(w_start)},{format_ass_time(event_end)},Default,,0,0,0,,{cum_text}")
+            except Exception:
+                pass
+
+        i += max_words_per_line
+    return events
+
+
+def transcribe_clip_to_ass(
+    clip_path: str,
+    ass_path: str,
+    style_config: dict = None,
+    position_config: str = "top",
+    typing_animation: bool = False
+) -> tuple:
+    """
+    Transcribe a short clip with word-level timestamps and write an ASS file.
+    Includes 1x retry for transient Groq errors and handles silent clips gracefully.
+    Returns (has_subtitle: bool, subtitle_error: str | None).
+    """
+    print(f"  [subtitle] Membuat ASS subtitle untuk {os.path.basename(clip_path)}...")
+    if not GROQ_API_KEY:
+        return False, "GROQ_API_KEY tidak dikonfigurasi"
+
+    if style_config is None:
+        style_config = {}
+
+    abs_clip_path = os.path.abspath(clip_path)
+    abs_ass_path = os.path.abspath(ass_path)
+
+    client = groq.Groq(api_key=GROQ_API_KEY)
+    max_attempts = 2
+    last_error = None
+    result = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with open(abs_clip_path, "rb") as f:
+                result = client.audio.transcriptions.create(
+                    file=(os.path.basename(abs_clip_path), f.read()),
+                    model="whisper-large-v3",
+                    response_format="verbose_json",
+                    timestamp_granularities=["word"],
+                    language="id",
+                )
+            last_error = None
+            break
+        except Exception as e:
+            last_error = e
+            err_str = str(e)
+            is_transient = any(kw in err_str.lower() for kw in ["timeout", "500", "502", "503", "504", "connection", "rate_limit", "429"]) or isinstance(e, (groq.APIConnectionError, groq.APIStatusError))
+            if is_transient and attempt < max_attempts:
+                print(f"  [subtitle] Error sementara ({e}), mencoba ulang (retry 1x)...", file=sys.stderr)
+                time.sleep(1.5)
+                continue
+            else:
+                print(f"  [subtitle] Gagal transkripsi klip (attempt {attempt}/{max_attempts}): {e}", file=sys.stderr)
+                break
+
+    if last_error is not None:
+        return False, f"Groq Whisper error: {str(last_error)}"
+
+    words = getattr(result, 'words', None) or []
+    segments = getattr(result, 'segments', None) or []
+    full_text = getattr(result, 'text', '').strip()
+
+    # Silent / no speech check (valid non-error condition)
+    if not words and not segments and not full_text:
+        print("  [subtitle] Klip senyap / tanpa suara terdeteksi (kondisi valid, skip subtitle).")
+        return False, None
+
+    header = build_ass_header(style_config, position_config)
+
+    if words:
+        events = words_to_ass_events(words, typing_animation=typing_animation)
+    elif segments:
+        events = []
+        for seg in segments:
+            start_t = float(seg.get('start', 0) if isinstance(seg, dict) else seg.start)
+            end_t = float(seg.get('end', 0) if isinstance(seg, dict) else seg.end)
+            text = (seg.get('text', '') if isinstance(seg, dict) else seg.text).strip()
+            if text:
+                events.append(f"Dialogue: 0,{format_ass_time(start_t)},{format_ass_time(end_t)},Default,,0,0,0,,{text}")
+    else:
+        events = []
+
+    if not events:
+        print("  [subtitle] Hasilt transkripsi kosong (skip subtitle).")
+        return False, None
+
+    try:
+        with open(abs_ass_path, 'w', encoding='utf-8') as f:
+            f.write(header + '\n'.join(events) + '\n')
+        return True, None
+    except Exception as e:
+        return False, f"Gagal menulis file ASS: {str(e)}"
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -263,29 +442,18 @@ def cut_raw_clip(video_path: str, start: float, end: float, raw_output: str) -> 
     return result.returncode == 0
 
 
-def produce_final_clip(raw_clip: str, srt_path: str, crop_filter: str, output_path: str) -> bool:
+def produce_final_clip(raw_clip: str, ass_path: str, crop_filter: str, output_path: str) -> bool:
     """
-    Step 3 — Re-encode with 9:16 smart crop + burned subtitle in one FFmpeg pass.
-    Subtitle style: white bold text, black outline, bottom-centre.
+    Step 3 — Re-encode with smart crop + burned ASS subtitle in one FFmpeg pass.
+    Dynamic subtitle styles and positions are embedded in the ASS file header.
     """
-    # Build subtitle filter string (use absolute path with forward slashes to avoid issues)
-    srt_abs = srt_path.replace('\\', '/').replace(':', '\\:')
+    abs_ass = os.path.abspath(ass_path)
+    has_ass = os.path.exists(abs_ass) and os.path.getsize(abs_ass) > 20
 
-    subtitle_style = (
-        "FontName=Arial,"
-        "Bold=1,"
-        "FontSize=20,"
-        "PrimaryColour=&H00FFFFFF,"    # white fill
-        "OutlineColour=&H00000000,"    # black outline
-        "Outline=4,"
-        "Shadow=0,"
-        "Alignment=8,"                 # TOP-centre — tidak menutupi wajah
-        "MarginV=80"                   # 80px dari atas
-    )
-
-    has_srt = os.path.exists(srt_path) and os.path.getsize(srt_path) > 10
-    if has_srt:
-        vf = f"{crop_filter},subtitles='{srt_abs}':force_style='{subtitle_style}'"
+    if has_ass:
+        # Escape Windows path for FFmpeg filter
+        ass_ffmpeg_path = abs_ass.replace('\\', '/').replace(':', '\\:')
+        vf = f"{crop_filter},subtitles='{ass_ffmpeg_path}'"
     else:
         vf = crop_filter
 
@@ -294,7 +462,7 @@ def produce_final_clip(raw_clip: str, srt_path: str, crop_filter: str, output_pa
         '-i', raw_clip,
         '-vf', vf,
         '-c:v', 'libx264',
-        '-preset', 'fast',
+        '-preset', 'ultrafast',
         '-crf', '23',
         '-c:a', 'aac',
         '-movflags', '+faststart',
@@ -312,12 +480,35 @@ def produce_final_clip(raw_clip: str, srt_path: str, crop_filter: str, output_pa
 
 async def main():
     if len(sys.argv) < 3:
-        print("Usage: python test_youtube.py <YOUTUBE_URL> <NUM_CLIPS>")
+        print("Usage: python test_youtube.py <YOUTUBE_URL> <NUM_CLIPS> [TARGET_DURATION] [ASPECT_RATIO] [SUBTITLE_CONFIG_JSON]")
         sys.exit(1)
 
     url       = sys.argv[1]
     num_clips = int(sys.argv[2])
+    target_duration = int(sys.argv[3]) if len(sys.argv) > 3 else 30
+    aspect_ratio = sys.argv[4] if len(sys.argv) > 4 else "9:16"
+
+    subtitle_config_raw = sys.argv[5] if len(sys.argv) > 5 else "{}"
+    try:
+        subtitle_config = json.loads(subtitle_config_raw)
+    except Exception:
+        subtitle_config = {}
+
+    subtitle_style = subtitle_config.get("style", {})
+    subtitle_position = subtitle_config.get("position", "top")
+    typing_animation = subtitle_config.get("typingAnimation", False)
+
     session_id = str(uuid.uuid4())[:8]
+
+    global TARGET_W, TARGET_H
+    if aspect_ratio == "16:9":
+        TARGET_W = 1280
+        TARGET_H = 720
+    else:
+        TARGET_W = 720
+        TARGET_H = 1280
+
+    print(f"[*] Starting job: url={url}, clips={num_clips}, duration={target_duration}s, aspect={aspect_ratio}, position={subtitle_position}, typingAnimation={typing_animation}")
 
     # ── 1. Download audio ────────────────────────────────────────────────────
     audio_file = None
@@ -341,12 +532,39 @@ async def main():
             os.remove(audio_file)
 
     # ── 3. AI: pilih klip terbaik dengan timestamp nyata dari Whisper ─────────
-    print("[*] Mencari klip menggunakan Groq & Gemini (Ensemble)...")
-    prompt = generate_user_prompt(transcript_text, num_clips, segments=transcript_segments)
+    print("[*] Mencari klip menggunakan Groq, Gemini & OpenRouter (Ensemble)...")
+    emit_progress("Analyzing with AI Models", 0, "Menganalisis menggunakan 3 AI Models...")
+    prompt = generate_user_prompt(
+        segments=transcript_segments,
+        target_count=num_clips,
+        target_duration=target_duration
+    )
     groq_task   = asyncio.create_task(call_groq(prompt))
     gemini_task = asyncio.create_task(call_gemini(prompt))
-    groq_clips, gemini_clips = await asyncio.gather(groq_task, gemini_task)
-    final_clips = deduplicate_and_merge(groq_clips, gemini_clips, num_clips)
+    openrouter_task = asyncio.create_task(call_openrouter(prompt))
+
+    completed_ai = 0
+    def ai_done_cb(t):
+        nonlocal completed_ai
+        completed_ai += 1
+        emit_progress("Analyzing with AI Models", int(completed_ai / 3 * 100), f"Model AI {completed_ai}/3 selesai")
+
+    groq_task.add_done_callback(ai_done_cb)
+    gemini_task.add_done_callback(ai_done_cb)
+    openrouter_task.add_done_callback(ai_done_cb)
+
+    groq_clips, gemini_clips, or_clips = await asyncio.gather(groq_task, gemini_task, openrouter_task)
+
+    all_raw_clips = groq_clips + gemini_clips + or_clips
+    snapped_clips = snap_to_segments(
+        clips=all_raw_clips,
+        segments=transcript_segments
+    )
+    final_clips = deduplicate_and_merge(
+        all_clips=snapped_clips,
+        target_count=num_clips,
+        target_duration=target_duration
+    )
 
     # ── 4. Download full video ───────────────────────────────────────────────
     video_file = None
@@ -354,17 +572,19 @@ async def main():
         os.makedirs(CLIPS_OUTPUT_DIR, exist_ok=True)
         video_file = download_video_from_youtube(url, session_id)
 
-        print(f"[*] Memproses {len(final_clips)} klip: crop 9:16 + face tracking + subtitle...")
+        print(f"[*] Memproses {len(final_clips)} klip: crop {aspect_ratio} + subtitle...")
+        emit_progress("Cutting Viral Clips", 0, f"Mempersiapkan render 0/{len(final_clips)} klip")
 
         for i, clip in enumerate(final_clips):
             clip_label = f"Klip {i+1}/{len(final_clips)}"
             start = float(clip.get('start_time', 0))
             end   = float(clip.get('end_time',   0))
+            emit_progress("Cutting Viral Clips", int(i / len(final_clips) * 100), f"Merender klip {i+1} dari {len(final_clips)}")
 
             # Temp files for this clip
-            raw_clip_path = os.path.join(SCRIPT_DIR, f"temp_raw_{session_id}_{i}.mp4")
-            srt_path      = os.path.join(SCRIPT_DIR, f"temp_sub_{session_id}_{i}.srt")
-            final_path    = os.path.join(CLIPS_OUTPUT_DIR, f"clip_{session_id}_{i}.mp4")
+            raw_clip_path = os.path.abspath(os.path.join(SCRIPT_DIR, f"temp_raw_{session_id}_{i}.mp4"))
+            ass_path      = os.path.abspath(os.path.join(SCRIPT_DIR, f"temp_sub_{session_id}_{i}.ass"))
+            final_path    = os.path.abspath(os.path.join(CLIPS_OUTPUT_DIR, f"clip_{session_id}_{i}.mp4"))
 
             try:
                 # Step A — Cut raw clip (stream copy, fast)
@@ -373,20 +593,31 @@ async def main():
                     raise RuntimeError("Gagal memotong raw clip")
 
                 # Step B — Face-tracking smart crop filter
-                print(f"  [{clip_label}] Analisis face tracking...")
-                crop_filter = run_smart_crop(raw_clip_path)
+                if aspect_ratio == "16:9":
+                    print(f"  [{clip_label}] Format 16:9 dipilih, skip face tracking.")
+                    crop_filter = f"scale={TARGET_W}:{TARGET_H}:force_original_aspect_ratio=decrease,pad={TARGET_W}:{TARGET_H}:(ow-iw)/2:(oh-ih)/2"
+                else:
+                    print(f"  [{clip_label}] Analisis face tracking...")
+                    crop_filter = run_smart_crop(raw_clip_path)
 
-                # Step C — Subtitle via Groq Whisper (word timestamps)
-                sub_ok = transcribe_clip_to_srt(raw_clip_path, srt_path)
+                # Step C — Subtitle via Groq Whisper (word timestamps) into ASS
+                sub_ok, sub_err = transcribe_clip_to_ass(
+                    raw_clip_path,
+                    ass_path,
+                    style_config=subtitle_style,
+                    position_config=subtitle_position,
+                    typing_animation=typing_animation
+                )
 
-                # Step D — Final render: crop 9:16 + burn subtitle
-                print(f"  [{clip_label}] Render final 9:16 + subtitle...")
-                ok = produce_final_clip(raw_clip_path, srt_path, crop_filter, final_path)
+                # Step D — Final render: crop + burn subtitle
+                print(f"  [{clip_label}] Render final {aspect_ratio} + ASS subtitle...")
+                ok = produce_final_clip(raw_clip_path, ass_path, crop_filter, final_path)
 
                 if ok:
                     clip['clip_url'] = f"/clips/clip_{session_id}_{i}.mp4"
                     clip['has_subtitle'] = sub_ok
-                    print(f"  [{clip_label}] ✓ Selesai → clip_{session_id}_{i}.mp4")
+                    clip['subtitle_error'] = sub_err
+                    print(f"  [{clip_label}] ✓ Selesai → clip_{session_id}_{i}.mp4 (Subtitle ok: {sub_ok})")
                 else:
                     raise RuntimeError("Render final gagal")
 
@@ -394,9 +625,10 @@ async def main():
                 print(f"  [{clip_label}] ✗ Error: {e}", file=sys.stderr)
                 clip['clip_url'] = None
                 clip['has_subtitle'] = False
+                clip['subtitle_error'] = str(e)
             finally:
                 # Cleanup temp files for this clip
-                for tmp in [raw_clip_path, srt_path]:
+                for tmp in [raw_clip_path, ass_path]:
                     if os.path.exists(tmp):
                         try:
                             os.remove(tmp)
@@ -408,6 +640,7 @@ async def main():
         for clip in final_clips:
             clip.setdefault('clip_url', None)
             clip.setdefault('has_subtitle', False)
+            clip.setdefault('subtitle_error', str(e))
     finally:
         if video_file and os.path.exists(video_file):
             try:
@@ -415,6 +648,7 @@ async def main():
             except Exception:
                 pass
 
+    emit_progress("Cutting Viral Clips", 100, f"Selesai merender {len(final_clips)} klip!")
     print("\n=== HASIL KLIP ===")
     print(json.dumps({
         "success": True,
@@ -422,11 +656,13 @@ async def main():
         "meta": {
             "groq_clip_count":  len(groq_clips),
             "gemini_clip_count": len(gemini_clips),
+            "openrouter_clip_count": len(or_clips),
             "final_clip_count":  len(final_clips),
-            "format": f"{TARGET_W}x{TARGET_H} (9:16)",
+            "format": f"{TARGET_W}x{TARGET_H} ({aspect_ratio})",
         }
     }, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
     asyncio.run(main())
+

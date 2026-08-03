@@ -23,8 +23,16 @@ app.use('/clips', express.static(clipsDir));
 app.use('/api/v1/download', downloaderRoutes);
 app.use('/api/v1/clipper', clipperRoutes);
 
-app.get('/', (req, res) => {
-  res.send('ClipForge AI Backend API MVP v4 is running!');
+// Serve static frontend files (if built)
+const frontendDistPath = path.resolve(__dirname, '../../frontend/dist');
+app.use(express.static(frontendDistPath));
+
+// Catch-all route to serve React app for non-API routes
+app.use((req, res, next) => {
+  if (req.method !== 'GET' || req.path.startsWith('/api/') || req.path.startsWith('/clips/')) {
+    return next();
+  }
+  res.sendFile(path.join(frontendDistPath, 'index.html'));
 });
 
 app.listen(PORT, () => {

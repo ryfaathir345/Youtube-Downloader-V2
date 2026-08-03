@@ -13,6 +13,8 @@ export interface Clip {
   virality_score?: number;
   viral_potential?: string;
   clip_url?: string | null;
+  has_subtitle?: boolean;
+  subtitle_error?: string | null;
 }
 
 interface ClipCardProps {
@@ -43,7 +45,7 @@ export const ClipCard: React.FC<ClipCardProps> = ({ clip, index, onPreview }) =>
         style={{
           display: 'flex',
           alignItems: 'center',
-          justify: 'space-between',
+          justifyContent: 'space-between',
           padding: '0.5rem 0.85rem',
           borderRadius: '8px',
           background: isUltraViral 
@@ -80,6 +82,12 @@ export const ClipCard: React.FC<ClipCardProps> = ({ clip, index, onPreview }) =>
           {formatTime(clip.start_time)} - {formatTime(clip.end_time)}
         </span>
       </div>
+
+      {clip.subtitle_error && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-2 text-xs text-amber-300 flex items-center gap-2">
+          <span>⚠️ Subtitle gagal: {clip.subtitle_error}</span>
+        </div>
+      )}
       
       <div>
         <h3 style={{ fontSize: '1.25rem', color: 'var(--text-primary)', marginBottom: '0.25rem' }}>{clip.title}</h3>

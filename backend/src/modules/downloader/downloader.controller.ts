@@ -43,14 +43,17 @@ export const getInfo = async (req: Request, res: Response): Promise<void> => {
 };
 
 export const downloadVideo = (req: Request, res: Response): void => {
-  const { url, quality } = req.query;
+  const { url, format_id, title, ext } = req.query;
 
   if (!url || typeof url !== 'string') {
     res.status(400).json({ error: 'URL is required' });
     return;
   }
 
-  const format = quality ? String(quality) : 'best';
+  const format = format_id ? String(format_id) : 'best';
+  const fileExt = ext ? String(ext) : 'mp4';
+  const safeTitle = title ? String(title).replace(/[^\w\s-]/gi, '') : 'video';
+  const finalFilename = `${safeTitle} Shadown.${fileExt}`;
 
   try {
     // We use spawn directly to pipe stdout to res
@@ -60,8 +63,8 @@ export const downloadVideo = (req: Request, res: Response): void => {
       o: '-', // output to stdout
     });
 
-    res.setHeader('Content-Disposition', `attachment; filename="download.mp4"`);
-    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', `attachment; filename="${finalFilename}"`);
+    res.setHeader('Content-Type', fileExt === 'mp3' || fileExt === 'm4a' ? 'audio/mpeg' : 'video/mp4');
 
     if (ytDlpProcess.stdout) {
         ytDlpProcess.stdout.pipe(res);

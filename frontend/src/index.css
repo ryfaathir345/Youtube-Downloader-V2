@@ -252,3 +252,75 @@ input::placeholder {
   border: none;
 }
 
+/* Landing and Downloader CSS */
+.glass-panel-elevated {
+  background: rgba(30, 41, 59, 0.6);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-top: 1px solid rgba(255, 255, 255, 0.3);
+  box-shadow: 0 20px 50px rgba(0,0,0,0.6);
+}
+
+@keyframes shimmer {
+  100% {
+      transform: translateX(100%);
+  }
+}
+.shimmer-animation {
+  animation: shimmer 2s infinite;
+}
+
+@keyframes line-flow {
+  0% {
+      background-position: -200% center;
+  }
+  100% {
+      background-position: 200% center;
+  }
+}
+
+/* AI Clipper Styles */
+.glass-card {
+  background: rgba(30, 41, 59, 0.5);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-top: 1px solid rgba(255, 255, 255, 0.2);
+  box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+}
+
+@keyframes pulse-border {
+  0% { box-shadow: 0 0 0 0 rgba(221, 183, 255, 0.4); }
+  70% { box-shadow: 0 0 0 10px rgba(221, 183, 255, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(221, 183, 255, 0); }
+}
+
+.processing-pulse {
+  animation: pulse-border 2s infinite;
+}
+
+@keyframes bg-pan {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+
+@keyframes scan {
+  0% { transform: translateY(0); }
+  100% { transform: translateY(300px); }
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(255,255,255,0.02);
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.1);
+  border-radius: 10px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.2);
+}
+
