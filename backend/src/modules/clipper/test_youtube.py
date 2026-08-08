@@ -42,8 +42,8 @@ SMART_CROP_PATH  = os.path.join(SCRIPT_DIR, '..', 'face-focus', 'smart_crop.py')
 CLIPS_OUTPUT_DIR = os.path.join(SCRIPT_DIR, '..', '..', '..', 'clips')
 
 # Target dimensions for 9:16 vertical format (short-form)
-TARGET_W = 720
-TARGET_H = 1280
+TARGET_W = 1080
+TARGET_H = 1920
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -83,7 +83,7 @@ def download_audio_from_youtube(url: str, session_id: str) -> str:
 
 
 def download_video_from_youtube(url: str, session_id: str) -> str:
-    """Download video (video+audio) in 720p max."""
+    """Download video (video+audio) up to 1080p — tanpa android client agar bisa ambil resolusi penuh."""
     print("[*] Mengunduh video untuk diproses...")
     video_base = os.path.join(SCRIPT_DIR, f"temp_video_{session_id}")
     def ydl_hook(d):
@@ -96,19 +96,22 @@ def download_video_from_youtube(url: str, session_id: str) -> str:
                 pass
 
     ydl_opts = {
-        'format': 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]',
+        # Ambil video terbaik hingga 1080p (mp4/webm) + audio terbaik, merge jadi mp4
+        'format': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/bestvideo[height<=1080]/best[height<=1080]/best',
         'outtmpl': video_base + '.%(ext)s',
         'merge_output_format': 'mp4',
         'ffmpeg_location': FFMPEG_PATH,
         'quiet': True,
         'no_warnings': True,
         'progress_hooks': [ydl_hook],
-        # Use android client — works without JS runtime and bypasses most 403s
-        'extractor_args': {'youtube': {'player_client': ['android', 'mweb']}},
+        # Tidak pakai android client — biarkan yt-dlp memilih client terbaik (web/innertube)
+        # agar bisa mengambil stream hingga 1080p
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
         },
         'nocheckcertificate': True,
+        'retries': 5,
+        'fragment_retries': 5,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
@@ -452,7 +455,9 @@ def run_smart_crop(video_path: str) -> str:
     Run smart_crop.py on a clip to get a face-tracking 9:16 FFmpeg filter string.
     Falls back to a simple centre crop if face tracking fails or cv2 not available.
     """
-    fallback = f"scale=-2:{TARGET_H},crop={TARGET_W}:{TARGET_H}:(iw-ow)/2:0"
+    # Correct center-crop fallback that guarantees 1080x1920 output:
+    # scale agar tinggi minimal TARGET_H, lebar minimal TARGET_W, lalu crop tengah
+    fallback = f"scale='if(gt(iw/ih,{TARGET_W}/{TARGET_H}),{-2},{TARGET_W})':-2,scale=-2:{TARGET_H},crop={TARGET_W}:{TARGET_H}"
     try:
         result = subprocess.run(
             [sys.executable, SMART_CROP_PATH, video_path, str(TARGET_W), str(TARGET_H)],
@@ -506,7 +511,8 @@ def cut_raw_clip(video_path: str, start: float, end: float, raw_output: str) -> 
         '-t',  f'{duration:.3f}',       # durasi tepat
         '-c:v', 'libx264',
         '-c:a', 'aac',
-        '-preset', 'ultrafast',         # cepat karena ini hanya file temp
+        '-preset', 'superfast',
+        '-crf', '14',                   # hampir lossless untuk intermediate
         '-avoid_negative_ts', 'make_zero',
         raw_output,
     ], capture_output=True, encoding='utf-8', errors='replace')
@@ -536,9 +542,12 @@ def produce_final_clip(raw_clip: str, ass_path: str, crop_filter: str, output_pa
         '-i', raw_clip,
         '-vf', vf,
         '-c:v', 'libx264',
-        '-preset', 'ultrafast',
-        '-crf', '23',
+        '-preset', 'slow',              # slow preset = encoder terbaik = kualitas lebih tajam
+        '-crf', '16',                   # crf 16 = kualitas sangat tinggi, tidak terasa compressed
+        '-maxrate', '8M',               # pastikan bitrate tidak drop di bawah standar HD
+        '-bufsize', '16M',
         '-c:a', 'aac',
+        '-b:a', '192k',                 # audio bitrate yang baik
         '-movflags', '+faststart',
         output_path,
     ], capture_output=True, encoding='utf-8', errors='replace')
@@ -553,6 +562,8 @@ def produce_final_clip(raw_clip: str, ass_path: str, crop_filter: str, output_pa
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def main():
+    start_time_real = time.time()
+    
     if len(sys.argv) < 3:
         print("Usage: python test_youtube.py <YOUTUBE_URL> <NUM_CLIPS> [TARGET_DURATION] [ASPECT_RATIO] [SUBTITLE_CONFIG_JSON]")
         sys.exit(1)
@@ -578,11 +589,11 @@ async def main():
 
     global TARGET_W, TARGET_H
     if aspect_ratio == "16:9":
-        TARGET_W = 1280
-        TARGET_H = 720
+        TARGET_W = 1920
+        TARGET_H = 1080
     else:
-        TARGET_W = 720
-        TARGET_H = 1280
+        TARGET_W = 1080
+        TARGET_H = 1920
 
     print(f"[*] Starting job: url={url}, clips={num_clips}, duration={target_duration}s, aspect={aspect_ratio}, position={subtitle_position}, typingAnimation={typing_animation}")
 
@@ -728,6 +739,8 @@ async def main():
             except Exception:
                 pass
 
+    elapsed_time = round(time.time() - start_time_real, 2)
+    
     emit_progress("Cutting Viral Clips", 100, f"Selesai merender {len(final_clips)} klip!")
     print("\n=== HASIL KLIP ===")
     print(json.dumps({
@@ -739,6 +752,7 @@ async def main():
             "openrouter_clip_count": len(or_clips),
             "final_clip_count":  len(final_clips),
             "format": f"{TARGET_W}x{TARGET_H} ({aspect_ratio})",
+            "processing_time_seconds": elapsed_time
         }
     }, ensure_ascii=False, indent=2))
 

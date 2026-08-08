@@ -105,7 +105,7 @@ export const ClipCard: React.FC<ClipCardProps> = ({ clip, index, onPreview }) =>
 
       <div className="flex justify-between items-center mt-8" style={{ marginTop: 'auto', paddingTop: '1rem', borderTop: '1px solid var(--glass-border)' }}>
         <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-          Duration: <strong>{clip.duration_seconds}s</strong>
+          Duration: <strong>{Number(clip.duration_seconds).toFixed(1)}s</strong>
         </span>
         <button 
           className="btn btn-primary" 

@@ -490,7 +490,15 @@ function App() {
                     <Sparkles className="text-secondary w-8 h-8" />
                     Generated Viral Clips
                   </h2>
-                  <p className="text-on-surface-variant mt-2">Successfully forged {clips.length} high-potential clips.</p>
+                  <p className="text-on-surface-variant mt-2 flex items-center gap-2">
+                    Successfully forged {clips.length} high-potential clips.
+                    {meta?.processing_time_seconds && (
+                      <span className="bg-surface-container border border-white/10 px-2 py-1 rounded-md text-xs font-mono flex items-center gap-1 text-secondary">
+                        <Clock className="w-3 h-3" />
+                        Processed in {meta.processing_time_seconds}s
+                      </span>
+                    )}
+                  </p>
                 </div>
                 
                 {meta && (
